@@ -1,10 +1,77 @@
 import streamlit as st
 import pandas as pd
+import requests
+from datetime import date
 
-#st.text("Ola, DEUS te ama.")
+
+#Captura do Silic pela API do Banco Central
+@st.cache_data(ttl='1day')
+def get_selic():
+    url = 'https://www.bcb.gov.br/api/servico/sitebcb/historicotaxasjuros'
+    resp = requests.get(url)
+    df = pd.DataFrame(resp.json()['conteudo'])
+
+    df['DataInicioVigencia'] = pd.to_datetime(df['DataInicioVigencia']).dt.date
+    df['DataFimVigencia'] = pd.to_datetime(df['DataFimVigencia']).dt.date
+    df['DataFimVigencia'] = df['DataFimVigencia'].fillna(date.today())
+
+
+    return df
+
+
+def main_metas() -> float:
+
+    col1, col2 = st.columns(2)
+    data_inicio_meta = col1.date_input("Inicio da Meta", max_value=df_stats.index.max(), min_value=df_stats.index.min())
+    data_filtrada = df_stats.index[df_stats.index <= data_inicio_meta][-1]
+
+    custo_fixos = col1.number_input("Custos Fixos", min_value=0., format="%.2f")
+
+    salario_brut = col2.number_input("Salário Bruto",min_value=0., format="%.2f")
+    salario_liq = col2.number_input("Salário Líquido",min_value=0., format="%.2f")
+
+    valor_inicio = df_stats.loc[data_filtrada]["Valor"]
+    col1.markdown(f'**Patrimônio no inicio da Meta**: R$ {valor_inicio:.2f}')
+
+    selic_gov = get_selic()
+    filter_selice_date = (selic_gov['DataInicioVigencia'] < data_inicio_meta) & (selic_gov['DataFimVigencia'] > data_inicio_meta)
+    selic_default = selic_gov[filter_selice_date]['MetaSelic'].iloc[0]
+
+    selic = st.number_input("Selic", min_value=0., value=selic_default, format="%.2f")
+    selic_ano = selic / 100
+    selic_mes = (selic_ano + 1) ** (1/12) - 1 #(1 + selic_ano) ** (1/12 - 1)
+
+    # st.text(f"Selic ano: {100*selic_ano:.2f}%")
+    # st.text(f"Selic mês: {100*selic_mes:.2f}%")
+    rendimento_ano = valor_inicio * selic_ano
+    rendimento_mes = valor_inicio * selic_mes
+
+    col1_pot, col2_pot = st.columns(2)
+    mensal = salario_liq - custo_fixos + rendimento_mes #arrecadação mensal
+    anual = (salario_liq - custo_fixos )*12 + rendimento_ano #mensal * 12 #arrecadação anual
+    with col1_pot.container(border=True):
+        st.markdown(f'**Potencial de Arrecadação Mês**:\n\n R$ {mensal:.2f}', 
+                    help= f'{salario_liq:.2f} + (-{custo_fixos:.2f} + {rendimento_mes:.2f})')
+
+    with col2_pot.container(border=True):
+        st.markdown(f'**Potencial de Arrecadação Ano**:\n\n R$ {anual:.2f}',
+                    help=f"12 * ({salario_liq:.2f} + (-{custo_fixos:.2f})) + {rendimento_ano:.2f}")
+
+
+    with st.container(border=True):
+        col1_meta, col2_meta = st.columns(2)
+        with col1_meta:
+            meta_estipulada = st.number_input("Meta Estipulada", min_value=0.,format="%.2f", value=anual)
+
+        with col2_meta:
+            patrimonio_final = meta_estipulada + valor_inicio
+            st.markdown(f"Patrimônio Estimado pós meta:\n\n R$ {patrimonio_final:.2f}")
+    
+    return data_inicio_meta, valor_inicio, meta_estipulada, patrimonio_final
+
+
 
 st.set_page_config(page_title="Finanças", page_icon="💰")
-
 st.markdown("""
 # Boas Vindas!
             
@@ -14,9 +81,9 @@ Espero que esteja gostando e curtindo a experiencia da solucao para organizacao 
 
 """)
 
+
 #Importacao/upload de arquivo/dados
 file_upload = st.file_uploader(label="Faca o upload dos dados aqui.", type=["csv"])
-
 
 def calc_general_stats(df:pd.DataFrame) -> pd.DataFrame:
 
@@ -139,43 +206,47 @@ if file_upload:
     #Metas
     with st.expander("Metas"):
 
-        col1, col2 = st.columns(2)
-
-        data_inicio_meta = col1.date_input("Inicio da Meta", max_value=df_stats.index.max(), min_value=df_stats.index.min())
-        data_filtrada = df_stats.index[df_stats.index <= data_inicio_meta][-1]
-
-        custo_fixos = col1.number_input("Custos Fixos", min_value=0., format="%.2f")
-
-        salario_brut = col2.number_input("Salário Bruto",min_value=0., format="%.2f")
-        salario_liq = col2.number_input("Salário Líquido",min_value=0., format="%.2f")
-
-        valor_inicio = df_stats.loc[data_filtrada]["Valor"]
-       
-        col1.markdown(f'**Valor no inicio da Meta**: R$ {valor_inicio:.2f}')
+        tab_main, tab_data_meta, tab_graph = st.tabs(tabs=['Configuração', 'Dados', 'Gráficos'])
 
 
-        col1_pot, col2_pot = st.columns(2)
-        mensal = salario_liq - custo_fixos #arrecadação mensal
-        anual = mensal * 12 #arrecadação anual
-        with col1_pot.container(border=True):
-            st.markdown(f'**Potencial de Arrecadação Mês**:\n\n R$ {mensal:.2f}')
+        with tab_main:
+            data_inicio_meta, valor_inicio, meta_estipulada, patrimonio_final = main_metas()
+  
 
-        with col2_pot.container(border=True):
-            st.markdown(f'**Potencial de Arrecadação Ano**:\n\n R$ {anual:.2f}')
+        with tab_data_meta:
+            meses = pd.DataFrame({
+                "Data Referência":[data_inicio_meta + pd.DateOffset(months=i) for i in range(1,13)],
+                'Meta Mensal': [valor_inicio + round(meta_estipulada/12,2) * i for i in range(1,13)],
+                #'Atingimento Esperado': [valor_inicio + round(meta_estipulada/12,2) * i for i in range(1,13)]
+                })
+            
+            meses['Data Referência'] =  meses['Data Referência'].dt.strftime("%Y-%m")
 
+            df_patrimonio = df_stats.reset_index()[['Data', 'Valor']]
+            df_patrimonio['Data Referência'] = pd.to_datetime(df_patrimonio['Data']).dt.strftime("%Y-%m")
+            #st.dataframe(df_patrimonio)
+            meses = meses.merge(df_patrimonio, how='left', on='Data Referência')
+            #st.dataframe(meses)
 
-        with st.container(border=True):
-            col1_meta, col2_meta = st.columns(2)
-            with col1_meta:
-                meta_estipulada = st.number_input("Meta Estipulada", min_value=0.,format="%.2f", value=anual)
+            meses = meses[['Data Referência', 'Meta Mensal', 'Valor']]
+            meses['Atingimento (%)'] = meses['Valor'] / meses['Meta Mensal']
+            meses['Atingimento Ano'] = meses['Valor'] / patrimonio_final
+            meses['Atingimento Esperado'] = meses['Meta Mensal'] / patrimonio_final
+            meses = meses.set_index('Data Referência')
 
-            with col2_meta:
-                patrimonio_final = meta_estipulada + valor_inicio
-                st.markdown(f"Patrimônio Estimado pós meta:\n\n R$ {patrimonio_final:.2f}")
-        
-        # col1.markdown("")
-        # col1.markdown("")
+            columns_config = {
 
-       
+            "Meta Mensal": st.column_config.NumberColumn("Meta Mensal", format='R$ %.2f'),
+            "Valor": st.column_config.NumberColumn("Valor", format='R$ %.2f'),
+            
+            "Atingimento (%)": st.column_config.NumberColumn("Atingimento (%)", format='percent'),
+            "Atingimento Ano": st.column_config.NumberColumn("Atingimento Ano", format='percent'),
+            "Atingimento Esperado": st.column_config.NumberColumn("Atingimento Esperado", format='percent')
+            }
+
+            st.dataframe(meses, column_config=columns_config)
+
+        with tab_graph:
+            st.line_chart(meses[['Atingimento Ano', 'Atingimento Esperado']])        
 
         
